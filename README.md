@@ -20,7 +20,7 @@ This project utilizes:
 
 ### Clone the repository
 ```bash
-git clone https://github.com/yourusername/sms-to-telegram-forwarder.git
+git clone https://github.com/roysbike/sms-to-telegram-forwarder.git
 cd sms-to-telegram-forwarder
 python -m venv venv
 source venv/bin/activate

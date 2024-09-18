@@ -20,8 +20,10 @@ This project utilizes:
 
 ### Clone the repository
 ```bash
+apt-get install python3-venv python3-pip
 git clone https://github.com/roysbike/yeastar_sms_to_telegram.git
-cd sms-to-telegram-forwarder
-python -m venv venv
+cd yeastar_sms_to_telegram
+python3 -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+pip3 install -r requirements.txt
+python3 app.py

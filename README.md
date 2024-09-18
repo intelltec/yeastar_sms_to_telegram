@@ -20,7 +20,7 @@ This project utilizes:
 
 ### Clone the repository
 ```bash
-git clone git@github.com:roysbike/yeastar_sms_to_telegram.git
+git clone https://github.com/roysbike/yeastar_sms_to_telegram.git
 cd sms-to-telegram-forwarder
 python -m venv venv
 source venv/bin/activate

@@ -48,8 +48,8 @@ def format_sms_for_telegram(sms_info):
         "📩 Received SMS\n"
         f"👤 From: {sms_info.get('Sender', 'Unknown')}\n"
         f"⏰ Time: {sms_info.get('Recvtime', 'Unknown')}\n"
-        f"📝 Content: {sms_info.get('Content', 'No content')}\n"
-        f"📡 SMS Center: {sms_info.get('Smsc', 'Unknown')}"
+        f"📡 SMS Center: {sms_info.get('Smsc', 'Unknown')}\n"
+        f"📝 Content: {sms_info.get('Content', 'No content')}"
     )
     return formatted_message
 

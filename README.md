@@ -1,7 +1,7 @@
 # SMS to Telegram Forwarder
 
 ## Overview
-The "SMS to Telegram Forwarder" is a Python script designed to listen for incoming SMS messages through an SMS gateway and forward them to a specified Telegram chat. This solution is perfect for organizations and individuals who want to receive crucial notifications or alerts directly on Telegram, ensuring they don't miss important updates.
+The "SMS to Telegram Forwarder" is a Python script designed to listen for incoming SMS messages through an GSM gateway (Testing Yeastar TG-100) and forward them to a specified Telegram chat. This solution is perfect for organizations and individuals who want to receive crucial notifications or alerts directly on Telegram, ensuring they don't miss important updates.
 
 ## Features
 - Connects to an SMS gateway to receive incoming SMS messages.

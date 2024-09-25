@@ -7,40 +7,40 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-def create_connection(ip, port):
+def create_connection(ip, connection_port):
     """
     Create a TCP socket connection to the specified IP address and port.
     """
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.connect((ip, port))
-    return sock
+    connection_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    connection_sock.connect((ip, connection_port))
+    return connection_sock
 
-def send_data(sock, data):
+def send_data(connection_sock, data):
     """
     Send data through the socket.
     """
-    sock.sendall(data.encode('utf-8'))
+    connection_sock.sendall(data.encode('utf-8'))
 
-def receive_data(sock):
+def receive_data(connection_sock):
     """
     Receive data from the socket until a specific sequence is detected.
     """
     buffer = []
     while True:
-        data = sock.recv(1024)
+        data = connection_sock.recv(1024)
         if not data or b"\r\n\r\n" in data:
             buffer.append(data)
             break
         buffer.append(data)
     return b''.join(buffer).decode('utf-8')
 
-def login_to_server(sock, username, password):
+def login_to_server(connection_sock, user_name, user_password):
     """
     Login to the server using the provided credentials.
     """
-    login_command = f"Action: Login\r\nUsername: {username}\r\nSecret: {password}\r\n\r\n"
-    send_data(sock, login_command)
-    return receive_data(sock)
+    login_command = f"Action: Login\r\nUsername: {user_name}\r\nSecret: {user_password}\r\n\r\n"
+    send_data(connection_sock, login_command)
+    return receive_data(connection_sock)
 
 def send_telegram_message(token, chat_id, text):
     """
@@ -76,13 +76,13 @@ def format_sms_for_telegram(sms_info):
     )
     return formatted_message
 
-def listen_for_incoming_sms(sock, token, chat_id):
+def listen_for_incoming_sms(connection_sock, token, chat_id):
     """
     Continuously listen for incoming SMS and send formatted notifications to Telegram.
     """
     print("Listening for incoming SMS...")
     while True:
-        response = receive_data(sock)
+        response = receive_data(connection_sock)
         if "ReceivedSMS" in response:
             print("Received SMS: ", response)
             sms_info = parse_sms_data(response)

@@ -1,3 +1,5 @@
+"""This module handles socket connections and Telegram notifications based on SMS data."""
+
 import os
 import socket
 import requests
@@ -7,7 +9,7 @@ load_dotenv()
 
 def create_connection(ip, port):
     """
-    Create a socket connection to the specified IP and port.
+    Create a TCP socket connection to the specified IP address and port.
     """
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.connect((ip, port))
@@ -15,13 +17,13 @@ def create_connection(ip, port):
 
 def send_data(sock, data):
     """
-    Send data to the socket.
+    Send data through the socket.
     """
     sock.sendall(data.encode('utf-8'))
 
 def receive_data(sock):
     """
-    Receive data from the socket until '\r\n\r\n'.
+    Receive data from the socket until a specific sequence is detected.
     """
     buffer = []
     while True:
@@ -34,7 +36,7 @@ def receive_data(sock):
 
 def login_to_server(sock, username, password):
     """
-    Send login command to the server using socket.
+    Login to the server using the provided credentials.
     """
     login_command = f"Action: Login\r\nUsername: {username}\r\nSecret: {password}\r\n\r\n"
     send_data(sock, login_command)
@@ -42,7 +44,7 @@ def login_to_server(sock, username, password):
 
 def send_telegram_message(token, chat_id, text):
     """
-    Send a message to a specified Telegram chat using bot token.
+    Send a message to a Telegram chat via bot.
     """
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     data = {'chat_id': chat_id, 'text': text}
@@ -51,7 +53,7 @@ def send_telegram_message(token, chat_id, text):
 
 def parse_sms_data(sms_data):
     """
-    Parse SMS data from the response.
+    Parse the SMS data from server response.
     """
     lines = sms_data.split('\r\n')
     sms_info = {}
@@ -63,7 +65,7 @@ def parse_sms_data(sms_data):
 
 def format_sms_for_telegram(sms_info):
     """
-    Format SMS data into a user-friendly string for Telegram messaging.
+    Format parsed SMS data into a Telegram-friendly message format.
     """
     formatted_message = (
         "📩 Received SMS\n"
@@ -76,7 +78,7 @@ def format_sms_for_telegram(sms_info):
 
 def listen_for_incoming_sms(sock, token, chat_id):
     """
-    Continuously listen for incoming SMS messages and send alerts to Telegram.
+    Continuously listen for incoming SMS and send formatted notifications to Telegram.
     """
     print("Listening for incoming SMS...")
     while True:

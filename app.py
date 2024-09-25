@@ -1,19 +1,28 @@
+import os
 import socket
 import requests
 from dotenv import load_dotenv
-import os
 
 load_dotenv()
 
 def create_connection(ip, port):
+    """
+    Create a socket connection to the specified IP and port.
+    """
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.connect((ip, port))
     return sock
 
 def send_data(sock, data):
+    """
+    Send data to the socket.
+    """
     sock.sendall(data.encode('utf-8'))
 
 def receive_data(sock):
+    """
+    Receive data from the socket until '\r\n\r\n'.
+    """
     buffer = []
     while True:
         data = sock.recv(1024)
@@ -24,17 +33,26 @@ def receive_data(sock):
     return b''.join(buffer).decode('utf-8')
 
 def login_to_server(sock, username, password):
+    """
+    Send login command to the server using socket.
+    """
     login_command = f"Action: Login\r\nUsername: {username}\r\nSecret: {password}\r\n\r\n"
     send_data(sock, login_command)
     return receive_data(sock)
 
 def send_telegram_message(token, chat_id, text):
+    """
+    Send a message to a specified Telegram chat using bot token.
+    """
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     data = {'chat_id': chat_id, 'text': text}
-    response = requests.post(url, data=data)
+    response = requests.post(url, data=data, timeout=10)
     print("Debug Telegram:", response.text)
 
 def parse_sms_data(sms_data):
+    """
+    Parse SMS data from the response.
+    """
     lines = sms_data.split('\r\n')
     sms_info = {}
     for line in lines:
@@ -44,6 +62,9 @@ def parse_sms_data(sms_data):
     return sms_info
 
 def format_sms_for_telegram(sms_info):
+    """
+    Format SMS data into a user-friendly string for Telegram messaging.
+    """
     formatted_message = (
         "📩 Received SMS\n"
         f"👤 From: {sms_info.get('Sender', 'Unknown')}\n"
@@ -54,6 +75,9 @@ def format_sms_for_telegram(sms_info):
     return formatted_message
 
 def listen_for_incoming_sms(sock, token, chat_id):
+    """
+    Continuously listen for incoming SMS messages and send alerts to Telegram.
+    """
     print("Listening for incoming SMS...")
     while True:
         response = receive_data(sock)
@@ -70,9 +94,6 @@ if __name__ == '__main__':
     password = os.getenv('TG_PASSWORD')
     telegram_token = os.getenv('TG_TOKEN')
     telegram_chat_id = os.getenv('TG_CHAT_ID')
-
-    # Printing environment variables for debugging
-    print(f"Environment Variables:\nTG_HOST={ip_address}\nTG_PORT={port}\nTG_USERNAME={username}\nTG_PASSWORD={password}\nTG_TOKEN={telegram_token}\nTG_CHAT_ID={telegram_chat_id}")
 
     sock = create_connection(ip_address, port)
     if "Response: Success" in login_to_server(sock, username, password):

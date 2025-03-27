@@ -3,9 +3,79 @@
 import os
 import socket
 import requests
+import smtplib
 from dotenv import load_dotenv
 
 load_dotenv()
+
+#smtp = {
+#        "server":'smtp.gmail.com',
+#        "port":"587",
+#        "password":"wcytlopcbofamglb",
+#        "email":"e5romsrev@gmail.com",
+#        }
+
+def smtpcodes(code):
+    switch = {
+            422:"Recipient Mailbox Full",
+            431:"Server out of space",
+            447:"Timeout. Try reducing number of recipients",
+            510:"One of the addresses in your TO, CC or BBC line doesn't exist. Check again your recipients' accounts and correct any possible misspelling.",
+            511:"One of the addresses in your TO, CC or BBC line doesn't exist. Check again your recipients' accounts and correct any possible misspelling.",
+            512:"Check again all your recipients' addresses: there will likely be an error in a domain name (like mail@domain.coom instead of mail@domain.com)",
+            541:"Your message has been detected and labeled as spam. You must ask the recipient to whitelist you",
+            554:"Your message has been detected and labeled as spam. You must ask the recipient to whitelist you",
+            550:"Though it can be returned also by the recipient's firewall (or when the incoming server is down), the great majority of errors 550 simply tell that the recipient email address doesn't exist. You should contact the recipient otherwise and get the right address.",
+            553:"Check all the addresses in the TO, CC and BCC field. There should be an error or a misspelling somewhere."
+    }
+    print(switch.get(code, "Unknown SMTP code error"))
+
+def mailout(tomail, from_device, SMS, delivery_receipt = False):
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    server = os.getenv('EMAIL_SERVER')
+    port = os.getenv('EMAIL_PORT')
+    password = os.getenv('EMAIL_PASS')
+    email = os.getenv('EMAIL_ADDR')
+    msg = MIMEMultipart('alternative')
+    msg['From'] = email
+#    msg['Return-Receipt-To'] = service_email
+    msg['Reply-To'] = email
+    listtomail=tomail.split(",",1)
+    if len(listtomail) == 1:
+        msg['To'] = tomail
+        recepients = tomail
+    else:
+        msg['To'] = listtomail[0]
+        msg['Cc'] = listtomail[1]
+        recepients = tomail.split(",")
+#    print("tomail",tomail)
+#    print("recepients",recepients)
+    msg['Subject'] = from_device
+    msg['Return-Path'] = email
+
+    part = MIMEText(SMS, 'plain', 'utf-8')
+    msg.attach(part)
+#    print(msg)
+    try:
+        print("trying to connect")
+        mail = smtplib.SMTP(server, port)
+#        mail.set_debuglevel(1)
+        mail.ehlo()
+        mail.starttls()
+        mail.login(email, password)
+        mail.sendmail(email, recepients, msg.as_string())
+        print('The mail to ' + tomail + ' was sent out successfully')
+#    finally:
+        mail.quit()
+    except smtplib.SMTPException as err:
+#        bot.send_message(CHAT, "Unable to send email!")
+        error_code = err.smtp_code
+        error_message = err.smtp_error
+        smtpcodes(error_code)
+        logger.error(error_code)
+        logger.error(error_message)
+
 
 def create_connection(ip, connection_port):
     """
@@ -90,6 +160,17 @@ def listen_for_incoming_sms(connection_sock, token, chat_id):
             send_telegram_message(token, chat_id, formatted_message)
 
 if __name__ == '__main__':
+    tomail = "dontsb@gmail.com"
+    devicename = "Pupkin"
+    testSMS = "sample text"
+#       email sendout
+    try:
+        mailout(tomail, devicename, testSMS)
+    except:
+        print("mailout() has failed!")
+#    bot.send_message(CHAT, 'mailout() has failed!')
+
+    exit()
     ip_address = os.getenv('TG_HOST')
     port = int(os.getenv('TG_PORT'))
     username = os.getenv('TG_USERNAME')

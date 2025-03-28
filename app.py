@@ -8,12 +8,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-#smtp = {
-#        "server":'smtp.gmail.com',
-#        "port":"587",
-#        "password":"wcytlopcbofamglb",
-#        "email":"e5romsrev@gmail.com",
-#        }
+import signal
+import sys
+
+def signal_handler(signal, frame):
+    print(chr(8)+chr(8),end="") #filter uuot ^c symbols
+    print("Listening is finished...")
+    sys.exit(0)
 
 def smtpcodes(code):
     switch = {
@@ -46,17 +47,16 @@ def mailout(tomail, from_device, SMS, delivery_receipt = False):
         msg['To'] = tomail
         recepients = tomail
     else:
+        #TODO automate Cc list creation(2+ eddresses)
         msg['To'] = listtomail[0]
         msg['Cc'] = listtomail[1]
         recepients = tomail.split(",")
 #    print("tomail",tomail)
-#    print("recepients",recepients)
     msg['Subject'] = from_device
     msg['Return-Path'] = email
 
     part = MIMEText(SMS, 'plain', 'utf-8')
     msg.attach(part)
-#    print(msg)
     try:
         print("trying to connect")
         mail = smtplib.SMTP(server, port)
@@ -75,7 +75,6 @@ def mailout(tomail, from_device, SMS, delivery_receipt = False):
         smtpcodes(error_code)
         logger.error(error_code)
         logger.error(error_message)
-
 
 def create_connection(ip, connection_port):
     """
@@ -96,6 +95,7 @@ def receive_data(connection_sock):
     Receive data from the socket until a specific sequence is detected.
     """
     buffer = []
+    signal.signal(signal.SIGINT, signal_handler)
     while True:
         data = connection_sock.recv(1024)
         if not data or b"\r\n\r\n" in data:
@@ -119,7 +119,7 @@ def send_telegram_message(token, chat_id, text):
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     data = {'chat_id': chat_id, 'text': text}
     response = requests.post(url, data=data, timeout=10)
-    print("Debug Telegram:", response.text)
+#    print("Debug Telegram:", response.text)
 
 def parse_sms_data(sms_data):
     """
@@ -138,11 +138,10 @@ def format_sms_for_telegram(sms_info):
     Format parsed SMS data into a Telegram-friendly message format.
     """
     formatted_message = (
-        "📩 Received SMS\n"
-        f"👤 From: {sms_info.get('Sender', 'Unknown')}\n"
-        f"⏰ Time: {sms_info.get('Recvtime', 'Unknown')}\n"
-        f"📡 SMS Center: {sms_info.get('Smsc', 'Unknown')}\n"
-        f"📝 Content: {sms_info.get('Content', 'No content')}"
+        "📩 Получено СМС\n"
+        f"👤 От: {sms_info.get('Sender', 'Unknown')}\n"
+        f"⏰ Время: {sms_info.get('Recvtime', 'Unknown')}\n"
+        f"📝 Содержимое: {sms_info.get('Content', 'No content')}"
     )
     return formatted_message
 
@@ -158,19 +157,13 @@ def listen_for_incoming_sms(connection_sock, token, chat_id):
             sms_info = parse_sms_data(response)
             formatted_message = format_sms_for_telegram(sms_info)
             send_telegram_message(token, chat_id, formatted_message)
+            try:
+                mailout("7wynmkgy@gmail.com", "Кононов", formatted_message)
+            except:
+                print("mailout() has failed!")
+                send_telegram_message(token, chat_id, "mailout() has failed!")
 
 if __name__ == '__main__':
-    tomail = "dontsb@gmail.com"
-    devicename = "Pupkin"
-    testSMS = "sample text"
-#       email sendout
-    try:
-        mailout(tomail, devicename, testSMS)
-    except:
-        print("mailout() has failed!")
-#    bot.send_message(CHAT, 'mailout() has failed!')
-
-    exit()
     ip_address = os.getenv('TG_HOST')
     port = int(os.getenv('TG_PORT'))
     username = os.getenv('TG_USERNAME')

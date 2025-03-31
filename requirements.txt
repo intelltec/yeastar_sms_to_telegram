@@ -3,3 +3,4 @@ python-dotenv
 smtplib
 signal
 sys
+termcolor

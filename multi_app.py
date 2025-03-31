@@ -46,10 +46,8 @@ def mailout(tomail, from_device, SMS, delivery_receipt = False):
 #    print("recepients",recepients)
     msg['Subject'] = from_device
     msg['Return-Path'] = email
-
     part = MIMEText(SMS, 'plain', 'utf-8')
     msg.attach(part)
-#    print(msg)
     try:
         print("trying to connect")
         mail = smtplib.SMTP(server, port)
@@ -59,10 +57,9 @@ def mailout(tomail, from_device, SMS, delivery_receipt = False):
         mail.login(email, password)
         mail.sendmail(email, recepients, msg.as_string())
         print('The mail to ' + tomail + ' was sent out successfully')
-#    finally:
+    finally:
         mail.quit()
     except smtplib.SMTPException as err:
-#        bot.send_message(CHAT, "Unable to send email!")
         error_code = err.smtp_code
         error_message = err.smtp_error
         smtpcodes(error_code)
@@ -139,7 +136,6 @@ def format_sms_for_telegram(sms_info, name):
     return formatted_message
 
 from threading import Thread
-import time
 import signal
 import sys
 from termcolor import colored, cprint
@@ -152,7 +148,7 @@ class general_error(Exception):
         super().__init__(colored(self.message,'light_red',attrs=[ "reverse"]))
 
 def signal_handler(signal, frame):
-    print(chr(8)+chr(8),end="") #filter uuot ^c symbols
+    print(chr(8)+chr(8),end="") #filter out ^C symbols
     print("Listening is finished...")
     global gw_num
     global gateways

@@ -158,7 +158,8 @@ def listen_for_incoming_sms(connection_sock, token, chat_id):
             formatted_message = format_sms_for_telegram(sms_info)
             send_telegram_message(token, chat_id, formatted_message)
             try:
-                mailout("7wynmkgy@gmail.com", "Кононов", formatted_message)
+                #TODO move mail address to env or whatever
+                mailout("......@gmail.com", "Name of device", formatted_message)
             except:
                 print("mailout() has failed!")
                 send_telegram_message(token, chat_id, "mailout() has failed!")

@@ -125,13 +125,13 @@ def parse_sms_data(sms_data):
             sms_info[key.strip()] = value.strip()
     return sms_info
 
-def format_sms_for_telegram(sms_info):
+def format_sms_for_telegram(sms_info, name):
     """
     Format parsed SMS data into a Telegram-friendly message format.
     """
     formatted_message = (
         "📩 Получено СМС\n"
-        f"👤 Для: {sms_info.get('Sender', 'Unknown')}\n"
+        f"👤 Для: {name}\n"
         f"👤 От: {sms_info.get('Sender', 'Unknown')}\n"
         f"⏰ Время: {sms_info.get('Recvtime', 'Unknown')}\n"
         f"📝 Содержимое: {sms_info.get('Content', 'No content')}"
@@ -145,6 +145,7 @@ import sys
 from termcolor import colored, cprint
 
 me = os.path.basename(__file__).split('.')[0]
+
 class general_error(Exception):
     def __init__(self, message):
         self.message = message
@@ -160,10 +161,6 @@ def signal_handler(signal, frame):
         gateways[i].stop()
 #    sys.exit(0)
 
-#    items[0].stop()
-#    items[1].stop()
-#    sys.exit(0)
-
 signal.signal(signal.SIGINT, signal_handler)
 
 #bot = Bot(API_KEY)
@@ -172,19 +169,21 @@ signal.signal(signal.SIGINT, signal_handler)
 #    global CHAT
 #    bot.send_message(CHAT, text)
 #exit()
-#TODO add ping api.telegram.org check to 
+#TODO use bot instead of self-written functin  
 
 #bot.send_message(CHAT, me + ' has being started!')
-
+#TODO use class or whatever instead of the long arg list
 class ReadGW(Thread):
-    def __init__(self, ip_address, port, username, password, telegram_token, telegram_chat_id):
+    def __init__(self, ip_address, port, username, name, password, telegram_token, telegram_chat_id, sendto_email):
         Thread.__init__(self)
         self.ip_address = ip_address
         self.port = int(port)
         self.username = username
+        self.name = name
         self.password = password
         self.telegram_token = telegram_token
         self.telegram_chat_id = telegram_chat_id
+        self.sendto_email = sendto_email
         self.running = True
         self.sock = None
     def stop(self):
@@ -203,13 +202,13 @@ class ReadGW(Thread):
                 if "ReceivedSMS" in response:
                     print("Received SMS: ", response)
                     sms_info = parse_sms_data(response)
-                    formatted_message = format_sms_for_telegram(sms_info)
+                    formatted_message = format_sms_for_telegram(sms_info, self.name)
                     send_telegram_message(self.telegram_token, self.telegram_chat_id, formatted_message)
-                  #  try:
-                  #      mailout("dontsb@gmail.com", "Name of device", formatted_message)
-                  #  except:
-                  #      print("mailout() has failed!")
-                  #      send_telegram_message(token, chat_id, "mailout() has failed!")
+                    try:
+                        mailout(self.sendto_email, self.name, formatted_message)
+                    except:
+                        print("mailout() has failed!")
+                        send_telegram_message(token, chat_id, "mailout() has failed!")
         else:
             print("Login failed")
             self.sock.close()
@@ -217,6 +216,7 @@ class ReadGW(Thread):
 sys.tracebacklimit = 0
 
 if __name__ == '__main__':
+    print(me + " has been started")
     ip_address = os.environ.get('TG100_HOST').split(',')
     port = os.environ.get('TG100_PORT').split(',')
     username = os.environ.get('TG100_USERNAME').split(',')
@@ -226,13 +226,14 @@ if __name__ == '__main__':
         raise general_error("Gateways lists of IP,port etc are not equal in length. Lookup in .env") 
     telegram_token = os.getenv('TG_TOKEN')
     telegram_chat_id = os.getenv('TG_CHAT_ID')
-#    send_telegram_message(telegram_token, telegram_chat_id, "main() started")
-    print(me + " has been started")
+    sendto_email = os.getenv('SENDTO_EMAIL')
+    print("ENV  has been imported successfully")
     global gw_num
     gw_num = len(ip_address)
+    print("TG100 gateways to listen to: ",gw_num)
     global gateways
     gateways = []
     for i in range(gw_num):
         print("starting " + str(i) + " thread")
-        gateways.append(ReadGW(ip_address[i],port[i],username[i],password[i],telegram_token,telegram_chat_id))
+        gateways.append(ReadGW(ip_address[i],port[i],username[i],name[i],password[i],telegram_token,telegram_chat_id,sendto_email))
         gateways[i].start()

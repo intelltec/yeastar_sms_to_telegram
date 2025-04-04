@@ -5,6 +5,7 @@ import socket
 import requests
 import smtplib
 from dotenv import load_dotenv
+import urllib.parse
 
 load_dotenv()
 
@@ -57,7 +58,7 @@ def mailout(tomail, from_device, SMS, delivery_receipt = False):
         mail.login(email, password)
         mail.sendmail(email, recepients, msg.as_string())
         print('The mail to ' + tomail + ' was sent out successfully')
-    finally:
+#    finally:
         mail.quit()
     except smtplib.SMTPException as err:
         error_code = err.smtp_code
@@ -126,12 +127,15 @@ def format_sms_for_telegram(sms_info, name):
     """
     Format parsed SMS data into a Telegram-friendly message format.
     """
+    raw_msg = sms_info.get('Content', 'No content')
+    dec_msg = urllib.parse.unquote_plus(raw_msg)
     formatted_message = (
         "📩 Получено СМС\n"
         f"👤 Для: {name}\n"
         f"👤 От: {sms_info.get('Sender', 'Unknown')}\n"
         f"⏰ Время: {sms_info.get('Recvtime', 'Unknown')}\n"
-        f"📝 Содержимое: {sms_info.get('Content', 'No content')}"
+        f"📝 Содержимое: {dec_msg}"
+#        f"📝 Содержимое: {sms_info.get('Content', 'No content')}"
     )
     return formatted_message
 
@@ -169,6 +173,17 @@ signal.signal(signal.SIGINT, signal_handler)
 
 #bot.send_message(CHAT, me + ' has being started!')
 #TODO use class or whatever instead of the long arg list
+
+class vars: 
+    def __init__(self, ip_address, port, username, name, password, telegram_token, telegram_chat_id, sendto_email):
+        self.ip_address = ip_address
+        self.port = int(port)
+        self.username = username
+        self.name = name
+        self.password = password
+        self.telegram_token = telegram_token
+        self.telegram_chat_id = telegram_chat_id
+        self.sendto_email = sendto_email
 class ReadGW(Thread):
     def __init__(self, ip_address, port, username, name, password, telegram_token, telegram_chat_id, sendto_email):
         Thread.__init__(self)
@@ -191,8 +206,8 @@ class ReadGW(Thread):
         print("Listening for incoming SMS...")
         self.sock = create_connection(self.ip_address, self.port)
         if "Response: Success" in login_to_server(self.sock, self.username, self.password):
-            print("Login successful")
-            send_telegram_message(self.telegram_token, self.telegram_chat_id, "Script TG100 Is Ready")
+            print("Login to " + self.name + " is successful")
+            send_telegram_message(self.telegram_token, self.telegram_chat_id, "Start listening to " + self.name)
             while self.running:
                 response = receive_data(self.sock)
                 if "ReceivedSMS" in response:
@@ -211,8 +226,12 @@ class ReadGW(Thread):
         
 sys.tracebacklimit = 0
 
+
 if __name__ == '__main__':
     print(me + " has been started")
+    envfile = os.path.dirname(os.path.realpath(__file__)) + '/.env'
+    if not os.path.exists(envfile):
+            raise general_error("The .env file does not exist!")
     ip_address = os.environ.get('TG100_HOST').split(',')
     port = os.environ.get('TG100_PORT').split(',')
     username = os.environ.get('TG100_USERNAME').split(',')
@@ -230,6 +249,6 @@ if __name__ == '__main__':
     global gateways
     gateways = []
     for i in range(gw_num):
-        print("starting " + str(i) + " thread")
+        print("starting " + str(i+1) + " thread")
         gateways.append(ReadGW(ip_address[i],port[i],username[i],name[i],password[i],telegram_token,telegram_chat_id,sendto_email))
         gateways[i].start()

@@ -4,10 +4,21 @@ import os
 import socket
 import requests
 import smtplib
-from dotenv import load_dotenv
+import signal
+import sys
 import urllib.parse
+from dotenv import load_dotenv
+from threading import Thread
+from termcolor import colored, cprint
 
 load_dotenv()
+
+me = os.path.basename(__file__).split('.')[0]
+
+class general_error(Exception):
+    def __init__(self, message):
+        self.message = message
+        super().__init__(colored(self.message,'light_red',attrs=[ "reverse"]))
 
 def smtpcodes(code):
     switch = {
@@ -64,16 +75,27 @@ def mailout(tomail, from_device, SMS, delivery_receipt = False):
         error_code = err.smtp_code
         error_message = err.smtp_error
         smtpcodes(error_code)
-        logger.error(error_code)
-        logger.error(error_message)
+#        logger.error(error_code)
+#        logger.error(error_message)
 
 def create_connection(ip, connection_port):
     """
     Create a TCP socket connection to the specified IP address and port.
     """
-    connection_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    connection_sock.connect((ip, connection_port))
-    return connection_sock
+    try:
+        connection_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        connection_sock.settimeout(15)
+        connection_sock.connect((ip, connection_port))
+        connection_sock.settimeout(None)
+        return connection_sock
+    except Exception as e:
+        print("Connection ",e)
+        return None
+#    except ConnectionRefusedError:
+#        print("Connection refused. Make sure the server is running.")
+#    except connection_sock.error as e:
+#        print(f"Connection error: {e}")
+
 
 def send_data(connection_sock, data):
     """
@@ -139,17 +161,6 @@ def format_sms_for_telegram(sms_info, name):
     )
     return formatted_message
 
-from threading import Thread
-import signal
-import sys
-from termcolor import colored, cprint
-
-me = os.path.basename(__file__).split('.')[0]
-
-class general_error(Exception):
-    def __init__(self, message):
-        self.message = message
-        super().__init__(colored(self.message,'light_red',attrs=[ "reverse"]))
 
 def signal_handler(signal, frame):
     print(chr(8)+chr(8),end="") #filter out ^C symbols
@@ -157,7 +168,7 @@ def signal_handler(signal, frame):
     global gw_num
     global gateways
     for i in range(gw_num):
-        print("Shutting " + str(i) + " thread ")        
+        print("Shutting " + str(i+1) + " thread ")        
         gateways[i].stop()
 #    sys.exit(0)
 
@@ -199,30 +210,36 @@ class ReadGW(Thread):
         self.sock = None
     def stop(self):
         self.running = False
-        self.sock.shutdown(socket.SHUT_RDWR)
-        self.sock.close()
-        print("Gracefully shutted down")
-    def run(self):
-        print("Listening for incoming SMS...")
-        self.sock = create_connection(self.ip_address, self.port)
-        if "Response: Success" in login_to_server(self.sock, self.username, self.password):
-            print("Login to " + self.name + " is successful")
-            send_telegram_message(self.telegram_token, self.telegram_chat_id, "Start listening to " + self.name)
-            while self.running:
-                response = receive_data(self.sock)
-                if "ReceivedSMS" in response:
-                    print("Received SMS: ", response)
-                    sms_info = parse_sms_data(response)
-                    formatted_message = format_sms_for_telegram(sms_info, self.name)
-                    send_telegram_message(self.telegram_token, self.telegram_chat_id, formatted_message)
-                    try:
-                        mailout(self.sendto_email, self.name, formatted_message)
-                    except:
-                        print("mailout() has failed!")
-                        send_telegram_message(token, chat_id, "mailout() has failed!")
-        else:
-            print("Login failed")
+        if self.sock != None:
+            self.sock.shutdown(socket.SHUT_RDWR)
             self.sock.close()
+            print("Gracefully shutted down")
+        else:
+            print("Empty socket so nothing to close here")
+    def run(self):
+        print("Connection attempt to " + self.name)
+        self.sock = create_connection(self.ip_address, self.port)
+        if self.sock != None:
+            if "Response: Success" in login_to_server(self.sock, self.username, self.password):
+                print("Login to " + self.name + " is successful")
+                send_telegram_message(self.telegram_token, self.telegram_chat_id, "Start listening to " + self.name)
+                while self.running:
+                    response = receive_data(self.sock)
+                    if "ReceivedSMS" in response:
+                        print("Received SMS: ", response)
+                        sms_info = parse_sms_data(response)
+                        formatted_message = format_sms_for_telegram(sms_info, self.name)
+                        send_telegram_message(self.telegram_token, self.telegram_chat_id, formatted_message)
+                        try:
+                            mailout(self.sendto_email, self.name, formatted_message)
+                        except:
+                            print("mailout() has failed!")
+                            send_telegram_message(token, chat_id, "mailout() has failed!")
+            else:
+                print("Login failed")
+                self.sock.close()
+        else:
+            print("No socket for " + self.name)
         
 sys.tracebacklimit = 0
 

@@ -10,15 +10,39 @@ import urllib.parse
 from dotenv import load_dotenv
 from threading import Thread
 from termcolor import colored, cprint
+import logging as logging
+from logging.handlers import RotatingFileHandler
 
 load_dotenv()
 
 me = os.path.basename(__file__).split('.')[0]
 
+""" log setup """
+logfile = me + '.log'
+logfile = os.path.dirname(os.path.realpath(__file__)) + '/' + logfile
+formatter = logging.Formatter('%(levelname)s %(asctime)s> %(message)s ', datefmt='%d-%b-%y %H:%M:%S')
+#logging.getLogger('PIL').setLevel(logging.ERROR)
+logger = logging.getLogger(__name__)
+
 class general_error(Exception):
     def __init__(self, message):
         self.message = message
         super().__init__(colored(self.message,'light_red',attrs=[ "reverse"]))
+
+""" some cprint wrappers """
+def rprint(text):
+    cprint(text,'light_grey')
+    logger.debug(text)
+def eprint(text):
+    cprint(text,'light_red')
+#    cprint(text,'grey','on_red',attrs=['dark'])
+    logger.error(text)
+def wprint(text):
+    cprint(text,'light_yellow')
+    logger.info(text)
+def gprint(text):
+    cprint(text,'light_green')
+    logger.info(text)
 
 def smtpcodes(code):
     switch = {
@@ -61,22 +85,21 @@ def mailout(tomail, from_device, SMS, delivery_receipt = False):
     part = MIMEText(SMS, 'plain', 'utf-8')
     msg.attach(part)
     try:
-        print("trying to connect")
+        rprint("trying to connect")
         mail = smtplib.SMTP(server, port)
 #        mail.set_debuglevel(1)
         mail.ehlo()
         mail.starttls()
         mail.login(email, password)
         mail.sendmail(email, recepients, msg.as_string())
-        print('The mail to ' + tomail + ' was sent out successfully')
-#    finally:
+        wprint('The mail to ' + tomail + ' was sent out successfully')
         mail.quit()
     except smtplib.SMTPException as err:
         error_code = err.smtp_code
         error_message = err.smtp_error
         smtpcodes(error_code)
-#        logger.error(error_code)
-#        logger.error(error_message)
+        logger.error(error_code)
+        logger.error(error_message)
 
 def create_connection(ip, connection_port):
     """
@@ -89,13 +112,8 @@ def create_connection(ip, connection_port):
         connection_sock.settimeout(None)
         return connection_sock
     except Exception as e:
-        print("Connection ",e)
+        eprint("Connection " + str(e))
         return None
-#    except ConnectionRefusedError:
-#        print("Connection refused. Make sure the server is running.")
-#    except connection_sock.error as e:
-#        print(f"Connection error: {e}")
-
 
 def send_data(connection_sock, data):
     """
@@ -164,13 +182,12 @@ def format_sms_for_telegram(sms_info, name):
 
 def signal_handler(signal, frame):
     print(chr(8)+chr(8),end="") #filter out ^C symbols
-    print("Listening is finished...")
+    rprint("Listening is finished...")
     global gw_num
     global gateways
     for i in range(gw_num):
-        print("Shutting " + str(i+1) + " thread ")        
+        wprint("Shutting " + str(i+1) + " thread ")        
         gateways[i].stop()
-#    sys.exit(0)
 
 signal.signal(signal.SIGINT, signal_handler)
 
@@ -213,59 +230,86 @@ class ReadGW(Thread):
         if self.sock != None:
             self.sock.shutdown(socket.SHUT_RDWR)
             self.sock.close()
-            print("Gracefully shutted down")
+            rprint("Gracefully shutted down")
         else:
-            print("Empty socket so nothing to close here")
+            eprint("Empty socket so nothing to close here")
     def run(self):
-        print("Connection attempt to " + self.name)
+        rprint("Connection attempt to " + self.name)
         self.sock = create_connection(self.ip_address, self.port)
         if self.sock != None:
             if "Response: Success" in login_to_server(self.sock, self.username, self.password):
-                print("Login to " + self.name + " is successful")
+                gprint("Login to " + self.name + " is successful")
                 send_telegram_message(self.telegram_token, self.telegram_chat_id, "Start listening to " + self.name)
                 while self.running:
                     response = receive_data(self.sock)
                     if "ReceivedSMS" in response:
-                        print("Received SMS: ", response)
+                        rprint("Received SMS: " + response)
                         sms_info = parse_sms_data(response)
                         formatted_message = format_sms_for_telegram(sms_info, self.name)
                         send_telegram_message(self.telegram_token, self.telegram_chat_id, formatted_message)
                         try:
                             mailout(self.sendto_email, self.name, formatted_message)
                         except:
-                            print("mailout() has failed!")
+                            eprint("mailout() has failed!")
                             send_telegram_message(token, chat_id, "mailout() has failed!")
             else:
-                print("Login failed")
+                eprint("Login failed")
                 self.sock.close()
         else:
-            print("No socket for " + self.name)
+            eprint("No socket for " + self.name)
         
 sys.tracebacklimit = 0
 
 
 if __name__ == '__main__':
-    print(me + " has been started")
+    gprint(me + " has been started")
     envfile = os.path.dirname(os.path.realpath(__file__)) + '/.env'
     if not os.path.exists(envfile):
-            raise general_error("The .env file does not exist!")
+            text = "The .env file does not exist!"
+            logger.error(text)
+            raise general_error(text)
+    rprint("Organizing logs...")
+    logtype = os.getenv('LOG_TYPE')
+    rotation_logging_handler = RotatingFileHandler(logfile, maxBytes=5000, backupCount=5)
+    if logtype == "debug":
+        logger.setLevel(logging.DEBUG)
+        sys.stdout = open(os.devnull, 'w')
+    elif logtype == "info":
+        logger.setLevel(logging.INFO)
+#        if os.path.isfile(logfile):
+        if os.stat(logfile).st_size > 0:
+            rotation_logging_handler.doRollover()
+        sys.stdout = open(os.devnull, 'w')
+    elif logtype == "error":
+        logger.setLevel(logging.ERROR)
+        formatter = logging.Formatter('%(levelname)s %(asctime)s %(filename)s:%(lineno)s > %(message)s (%(funcName)s)', datefmt='%d-%b-%y %H:%M:%S')
+        sys.stdout = open(os.devnull, 'w')
+    elif logtype == "console":
+        logger.setLevel(logging.CRITICAL)
+    else:
+        raise general_error("Inappropriate log level!") 
+    rotation_logging_handler.setFormatter(formatter)
+    logger.addHandler(rotation_logging_handler)
+    
     ip_address = os.environ.get('TG100_HOST').split(',')
     port = os.environ.get('TG100_PORT').split(',')
     username = os.environ.get('TG100_USERNAME').split(',')
     name = os.environ.get('TG100_NAME').split(',')
     password = os.environ.get('TG100_PASSWORD').split(',')
     if len(set(map(len, (ip_address,port,username,name,password)))) != 1:
-        raise general_error("Gateways lists of IP,port etc are not equal in length. Lookup in .env") 
+        text = "Gateways lists of IP,port etc are not equal in length. Lookup in .env"
+        logger.error(text)
+        raise general_error(text) 
     telegram_token = os.getenv('TG_TOKEN')
     telegram_chat_id = os.getenv('TG_CHAT_ID')
     sendto_email = os.getenv('SENDTO_EMAIL')
-    print("ENV  has been imported successfully")
+    rprint("ENV  has been imported successfully")
     global gw_num
     gw_num = len(ip_address)
-    print("TG100 gateways to listen to: ",gw_num)
+    rprint("TG100 gateways to listen to: " + str(gw_num))
     global gateways
     gateways = []
     for i in range(gw_num):
-        print("starting " + str(i+1) + " thread")
+        wprint("starting " + str(i+1) + " thread")
         gateways.append(ReadGW(ip_address[i],port[i],username[i],name[i],password[i],telegram_token,telegram_chat_id,sendto_email))
         gateways[i].start()

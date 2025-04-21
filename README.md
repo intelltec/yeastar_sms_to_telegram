@@ -17,13 +17,14 @@ This project utilizes:
 - **Socket Programming**: For connecting and interacting with the SMS gateway.
 - **Requests**: For sending messages to Telegram.
 - **Python-dotenv**: For managing configuration variables through an `.env` file.
+- **Threading**: Thread-based parallel execution of a few processes as an objects for the same class.
 
 ## Installation and Setup
 
 ### Clone the repository
 ```bash
-apt-get install python3-venv python3-pip
-git clone https://github.com/roysbike/yeastar_sms_to_telegram.git
+sudo apt install python3-venv python3-pip
+git clone https://github.com/intelltec/yeastar_sms_to_telegram.git
 cd yeastar_sms_to_telegram
 python3 -m venv venv
 source venv/bin/activate
@@ -38,5 +39,6 @@ python3 multiapp.py
 - LOG_TYPE={info,debug,error,console}. Debug is the same as console but into logfile. 
 - TG100_HOST - either one or many IPs of gateways divided by comma
 - TG100_PORT, TG100_USERNAME, TG100_PASSWORD - same as previous, but for gateways' ports, usernames and passwords correspondingly
-- TG100_NAME - inner names just to distinction of SMS
-Note: there'd be an exception if above so-declared arrays have had different lengths
+- TG100_NAME - inner names just to distinction of SMS<br>
+
+Note: there'd be an exception if above so-declared arrays will have different lengths

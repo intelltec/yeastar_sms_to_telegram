@@ -78,8 +78,6 @@ def mailout(tomail, from_device, SMS, delivery_receipt = False):
         msg['To'] = listtomail[0]
         msg['Cc'] = listtomail[1]
         recepients = tomail.split(",")
-#    print("tomail",tomail)
-#    print("recepients",recepients)
     msg['Subject'] = from_device
     msg['Return-Path'] = email
     part = MIMEText(SMS, 'plain', 'utf-8')
@@ -97,6 +95,7 @@ def mailout(tomail, from_device, SMS, delivery_receipt = False):
     except smtplib.SMTPException as err:
         error_code = err.smtp_code
         error_message = err.smtp_error
+
         smtpcodes(error_code)
         logger.error(error_code)
         logger.error(error_message)
@@ -121,17 +120,46 @@ def send_data(connection_sock, data):
     """
     connection_sock.sendall(data.encode('utf-8'))
 
-def receive_data(connection_sock):
+def check_socket(sock: socket.socket) -> bool:
+    try:
+        data = sock.recv(16, socket.MSG_DONTWAIT | socket.MSG_PEEK)
+        if len(data) == 0:
+            gprint("socket is ok")
+            return True
+    except BlockingIOError:
+        wprint("socket is open and reading from it would block")
+        return False
+    except ConnectionResetError:
+        eprint("socket was closed for some other reason")
+        return False
+    except Exception as e:
+        eprint("unexpected exception " + str(e))
+        return False
+    return False
+    
+
+import select
+
+def receive_data(connection_sock,name,conn_state):
     """
     Receive data from the socket until a specific sequence is detected.
     """
     buffer = []
     while True:
-        data = connection_sock.recv(1024)
-        if not data or b"\r\n\r\n" in data:
+ #       connection_sock.settimeout(10.0)
+        connection_sock.settimeout(0.0)
+        ready = select.select([connection_sock], [], [], 15)
+        if ready[0]:
+            data = connection_sock.recv(1024)
+            if not data or b"\r\n\r\n" in data:
+                buffer.append(data)
+                break
             buffer.append(data)
-            break
-        buffer.append(data)
+        else:
+            data = f"Action: Ping\r\n\r\n"
+            connection_sock.sendall(data.encode('utf-8'))
+            conn_state["Ping"] = conn_state.get("Ping") + 1
+ #   connection_sock.settimeout(None)
     return b''.join(buffer).decode('utf-8')
 
 def login_to_server(connection_sock, user_name, user_password):
@@ -140,7 +168,7 @@ def login_to_server(connection_sock, user_name, user_password):
     """
     login_command = f"Action: Login\r\nUsername: {user_name}\r\nSecret: {user_password}\r\n\r\n"
     send_data(connection_sock, login_command)
-    return receive_data(connection_sock)
+    return receive_data(connection_sock,"","")
 
 def send_telegram_message(token, chat_id, text):
     """
@@ -191,17 +219,7 @@ def signal_handler(signal, frame):
 
 signal.signal(signal.SIGINT, signal_handler)
 
-#bot = Bot(API_KEY)
-# sending messages:
-#def tg_send_message(text):
-#    global CHAT
-#    bot.send_message(CHAT, text)
-#exit()
-#TODO use bot instead of self-written functin  
-
-#bot.send_message(CHAT, me + ' has being started!')
 #TODO use class or whatever instead of the long arg list
-
 class vars: 
     def __init__(self, ip_address, port, username, name, password, telegram_token, telegram_chat_id, sendto_email):
         self.ip_address = ip_address
@@ -212,6 +230,11 @@ class vars:
         self.telegram_token = telegram_token
         self.telegram_chat_id = telegram_chat_id
         self.sendto_email = sendto_email
+
+RESTART_THRESHOLD = 2
+import time
+import threading
+
 class ReadGW(Thread):
     def __init__(self, ip_address, port, username, name, password, telegram_token, telegram_chat_id, sendto_email):
         Thread.__init__(self)
@@ -225,15 +248,54 @@ class ReadGW(Thread):
         self.sendto_email = sendto_email
         self.running = True
         self.sock = None
+        self.conn_state = {"Ping": 0}
+        self.watchdog_thread = None
+        self.read_thread = None
+    def start(self):
+        self.read_thread = Thread(target=self._run)
+        self.read_thread.start()
     def stop(self):
         self.running = False
         if self.sock != None:
+        #    check_socket(self.sock)
             self.sock.shutdown(socket.SHUT_RDWR)
             self.sock.close()
+            if self.read_thread and self.read_thread.is_alive():
+                self.read_thread.join()
             rprint("Gracefully shutted down")
         else:
             eprint("Empty socket so nothing to close here")
+    def _watchdog(self):
+        while True:
+            if self.shutdown.wait(timeout=5):
+                return
+            if self.conn_state["Ping"] < RESTART_THRESHOLD:
+    #            print("threshold for " + self.name + " is not exceeded:" + str(self.conn_state["Ping"]))
+                continue
+                
+            try:
+                eprint("confirmed no connection to " + self.name)
+                rprint("Checking socket itself...")
+                if check_socket(self.sock):
+                    self.stop()
+                time.sleep(30)
+                self._run()
+            except:
+                pass
+
     def run(self):
+        self.shutdown = threading.Event()
+        self.watchdog_thread = Thread(target=self._watchdog)
+        try:
+            self.watchdog_thread.start()
+            self._run()
+        finally:
+            self.shutdown.set()
+            self.watchdog_thread.join()
+        return 0
+    
+    def _run(self):
+        response = ""
         rprint("Connection attempt to " + self.name)
         self.sock = create_connection(self.ip_address, self.port)
         if self.sock != None:
@@ -241,7 +303,11 @@ class ReadGW(Thread):
                 gprint("Login to " + self.name + " is successful")
                 send_telegram_message(self.telegram_token, self.telegram_chat_id, "Start listening to " + self.name)
                 while self.running:
-                    response = receive_data(self.sock)
+                    try:
+                        response = receive_data(self.sock,self.name,self.conn_state)
+                    except Exception as e:
+                        eprint(str(e))
+                        pass
                     if "ReceivedSMS" in response:
                         rprint("Received SMS: " + response)
                         sms_info = parse_sms_data(response)
@@ -252,6 +318,8 @@ class ReadGW(Thread):
                         except:
                             eprint("mailout() has failed!")
                             send_telegram_message(token, chat_id, "mailout() has failed!")
+                    elif "Pong" in response:
+                        self.conn_state["Ping"] = self.conn_state.get("Ping") - 1
             else:
                 eprint("Login failed")
                 self.sock.close()
@@ -276,7 +344,6 @@ if __name__ == '__main__':
         sys.stdout = open(os.devnull, 'w')
     elif logtype == "info":
         logger.setLevel(logging.INFO)
-#        if os.path.isfile(logfile):
         if os.stat(logfile).st_size > 0:
             rotation_logging_handler.doRollover()
         sys.stdout = open(os.devnull, 'w')

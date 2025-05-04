@@ -6,10 +6,12 @@ The "SMS to Telegram Forwarder" is a Python script designed to listen for incomi
 ## Features
 - Connects to an SMS gateway to receive incoming SMS messages.
 - Beautifies SMS messages with emojis to enhance readability.
-- Forwards messages to a specified Telegram chat or goup or channel.
+- Forwards messages to a specified Telegram chat or group or channel.
 - Easy configuration via an `.env` file to manage settings.
 - *NEW* Multithreading app for collecting sms from unlimited number of gateways
 - *NEW* Logging with info/error/debug levels
+- *NEW* Exception handling and multiple checks for threads/connections' health
+- *NEW* Separate thread for watchdog, binded with it's own base thread.
 
 ## Technologies
 This project utilizes:
@@ -17,7 +19,7 @@ This project utilizes:
 - **Socket Programming**: For connecting and interacting with the SMS gateway.
 - **Requests**: For sending messages to Telegram.
 - **Python-dotenv**: For managing configuration variables through an `.env` file.
-- **Threading**: Thread-based parallel execution of a few processes as an objects for the same class.
+- **Threading**: Thread-based parallel execution of a few processes as objects for the same class.
 
 ## Installation and Setup
 
@@ -33,12 +35,11 @@ pip3 install -r requirements.txt
 python3 app.py 
 # multi-threading app
 python3 multiapp.py 
-# 
 ```
 ### .ENV hints
-- LOG_TYPE={info,debug,error,console}. Debug is the same as console but into logfile. 
-- TG100_HOST - either one or many IPs of gateways divided by comma
-- TG100_PORT, TG100_USERNAME, TG100_PASSWORD - same as previous, but for gateways' ports, usernames and passwords correspondingly
-- TG100_NAME - inner names just to distinction of SMS<br>
+- `LOG_TYPE={info,debug,error,console}` `debug` is the same as console but into logfile. 
+- `TG100_HOST` - either one or many IPs of gateways divided by comma
+- `TG100_PORT, TG100_USERNAME, TG100_PASSWORD` - same as previous, but for gateways' ports, usernames and passwords correspondingly
+- `TG100_NAME` - inner names just to distinction of SMS<br>
 
 Note: there'd be an exception if above so-declared arrays will have different lengths

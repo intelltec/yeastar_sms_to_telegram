@@ -4,6 +4,7 @@ import os
 import socket
 import requests
 import smtplib
+import select
 import signal
 import sys
 import urllib.parse
@@ -12,6 +13,9 @@ from threading import Thread
 from termcolor import colored, cprint
 import logging as logging
 from logging.handlers import RotatingFileHandler
+RESTART_THRESHOLD = 2
+import time
+import threading
 
 load_dotenv()
 
@@ -144,10 +148,6 @@ def check_socket(sock: socket.socket) -> bool:
         eprint("unexpected exception " + str(e))
         return False
     return False
-    
-
-import select
-
 
 def send_telegram_message(token, chat_id, text):
     """
@@ -207,9 +207,6 @@ class vars:
         self.telegram_chat_id = telegram_chat_id
         self.sendto_email = sendto_email
 
-RESTART_THRESHOLD = 2
-import time
-import threading
 
 class ReadGW(Thread):
     def __init__(self, ip_address, port, username, name, password, telegram_token, telegram_chat_id, sendto_email):
@@ -237,13 +234,15 @@ class ReadGW(Thread):
     def _close_socket(self) -> None:
         if self.sock:
             try:
-        #    check_socket(self.sock)
                 self.sock.shutdown(socket.SHUT_RDWR)
                 self.sock.close()
                 rprint("Socket was closed without error(s)")
             except Exception as e:
-                eprint("Close socket bad attempt for " + self.name + " with error: " + str(e))
+                ### Only log errors if not during shutdown
+                if not self.shutdown_event.is_set():
+                    eprint("Close socket bad attempt for " + self.name + " with error: " + str(e))
             finally:
+            # Ensure that socket is cleared up
                 self.sock = None
         else:
             wprint("Empty socket so nothing to close here")
@@ -253,19 +252,54 @@ class ReadGW(Thread):
         Receive data from the socket until a specific sequence is detected.
         """
         buffer = []
-#TODO hardcode!
-#        while self.running.is_set() and not self.shutdown_event.is_set():
-        while True:
+        while self.running.is_set() and not self.shutdown_event.is_set():
             try:
-                data = self.sock.recv(1024)
-                if not data or b"\r\n\r\n" in data:
-                    buffer.append(data)
+                # Check if socket exists and is valid
+                if not self.sock:
                     break
-                buffer.append(data)
+                # Set timeout for select
+#TODO remove hardcode!
+                self.sock.settimeout(15)  
+                # Use select with shutdown event check
+                ready, _, _ = select.select([self.sock], [], [], 1.0)  # Smaller timeout for more responsive shutdown
+                # Check if we're shutting down
+                if self.shutdown_event.is_set():
+                    break            
+#            self.sock.settimeout(0.0)
+                if ready:
+                    data = self.sock.recv(1024)
+                    if not data or b"\r\n\r\n" in data:
+                        buffer.append(data)
+                        break
+                    buffer.append(data)
+                else:
+                # Only send ping if not shutting down
+                    if not self.shutdown_event.is_set():
+#TODO remove hardcode!
+                        if self.sock:
+                            try:
+                                data = f"Action: Ping\r\n\r\n"
+                                self.sock.sendall(data.encode('utf-8'))
+                                self.conn_state += 1 
+                                time.sleep(15)
+                                rprint("conn_state for " + self.name + " is: " + str(self.conn_state))
+                            except Exception as e:
+                                eprint("Error sending ping to " + self.name + ": " + str(e))
+                                break
+                        else:
+                            wprint("a socket for " + self.name + " was already destroyed, so no Ping this time")
+                            break
+            except socket.timeout:
+            # Normal timeout, continue loop
+                continue
             except Exception as e:
-                eprint("exception in socket.recv() for " + self.name + " : " + str(e))
+                eprint("Exception in _receive_data for " + self.name + ": " + str(e))
+                break
+        if self.sock and not self.shutdown_event.is_set():
+            self.sock.settimeout(None)
         return b''.join(buffer).decode('utf-8')
 
+#TODO discard this method(using it only once)
     def _login_to_server(self):
         """
         Login to the server using the provided credentials.
@@ -276,8 +310,7 @@ class ReadGW(Thread):
 
     def _watchdog(self) -> None:
         """
-        Monitor the base thread and socket connection.
-        Restart the base thread if it's not running or the connection is bad.
+        Monitor the base thread and socket/connection.
         """
         while self.running.is_set() and not self.shutdown_event.is_set():
             # Check if base thread is alive
@@ -299,20 +332,19 @@ class ReadGW(Thread):
                     self._close_socket()
                     # The base thread will handle reconnection
                     break
-
-                print("Sending ping for " + self.name)
-                data = f"Action: Ping\r\n\r\n"
-                self.sock.sendall(data.encode('utf-8'))
+#                print("Sending ping for " + self.name)
+#                data = f"Action: Ping\r\n\r\n"
+#                self.sock.sendall(data.encode('utf-8'))
 #                self.conn_state["Ping"] = self.conn_state.get("Ping") + 1
-                self.conn_state += 1
-#TODO remove hardcode!
+#                self.conn_state += 1
+    #TODO remove hardcode!
 #                time.sleep(5)
 #                if self.conn_state["Ping"] < RESTART_THRESHOLD:
                 if self.conn_state < RESTART_THRESHOLD:
 #                    print("threshold for " + self.name + " is not exceeded:" + str(self.conn_state["Ping"]))
-                    print("threshold for " + self.name + " is not exceeded:" + str(self.conn_state))
+                    rprint("threshold for " + self.name + " is not exceeded: " + str(self.conn_state))
                     time.sleep(self.check_interval)
-                    return
+                    continue
                 else:
                     eprint("confirmed lost connection to " + self.name)
                     rprint("Waiting before reconnect...")
@@ -321,8 +353,13 @@ class ReadGW(Thread):
                     self.conn_state = 0
                     self._close_socket()
             # sleep till another check either broke from while() or conventionally
-            print("alive watchdog for " + self.name)
+    #TODO remove hardcode!
+#            for _ in range(5):
+            if self.shutdown_event.is_set():
+                break
             time.sleep(self.check_interval)
+    #TODO remove hardcode!
+            print("alive watchdog for " + self.name)
 
     def _start_base_thread(self) -> None:
         if self.shutdown_event.wait(timeout=self.shutdown_timeout):
@@ -399,7 +436,6 @@ class ReadGW(Thread):
             self.base_thread = None
             self.watchdog_thread = None
 
-#TODO rewrite with CONNECTION_ATTEMPTS = 3
     def _run(self):
         response = ""
         rprint("Connection attempt to " + self.name + " #" + str(self.conn_attempt))
@@ -429,12 +465,13 @@ class ReadGW(Thread):
                                 eprint("mailout() has failed!")
                                 send_telegram_message(token, chat_id, "mailout() has failed!")
                         elif "Pong" in response:
-                            print("pong received for " + self.name)
+                            rprint("PoNG REceived for " + self.name)
 #TODO make ping-pong counter class property
-#                            self.conn_state["Ping"] = self.conn_state.get("Ping") - 1
                             self.conn_state -= 1
+                            print("conn_state for " + self.name + " is: " + str(self.conn_state))
                     else:
                         eprint("Socket is empty")
+#TODO remove hardcode!
                         time.sleep(100)
             else:
                 eprint("Login failed")

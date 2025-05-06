@@ -63,6 +63,7 @@ def smtpcodes(code):
     }
     print(switch.get(code, "Unknown SMTP code error"))
 
+#TODO move .env reading out of mail func
 def mailout(tomail, from_device, SMS, delivery_receipt = False):
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
@@ -221,8 +222,19 @@ class ReadGW(Thread):
         self.sendto_email = sendto_email
         self.conn_attempt = 1 # how many times base_tread must respawn
         self.sock = None
-#        self.conn_state = {"Ping": 0}
         self.conn_state = 0
+
+### Added ping tracking variables
+        self.last_ping_time = 0
+        self.ping_interval = 30  # seconds between pings
+        self.ping_timeout = 15  # seconds to wait for pong
+        self.ping_id = None
+        self.ping_lock = threading.Lock()
+
+#        self.waiting_for_pong = False
+        # Thread management
+#        self.base_thread = None
+#        self.watchdog_thread = None
 
         self.base_thread: Optional[threading.Thread] = None
         self.watchdog_thread: Optional[threading.Thread] = None
@@ -247,57 +259,67 @@ class ReadGW(Thread):
         else:
             wprint("Empty socket so nothing to close here")
 
-    def _receive_data(self):
+    def _receive_data(self, timeout=5.0):
         """
         Receive data from the socket until a specific sequence is detected.
         """
+        if not self.sock:
+            return None
         buffer = []
-        while self.running.is_set() and not self.shutdown_event.is_set():
-            try:
-                # Check if socket exists and is valid
-                if not self.sock:
+        self.sock.settimeout(timeout)
+        try:
+            while True:
+                data = self.sock.recv(1024)
+                if not data:
                     break
-                # Set timeout for select
-#TODO remove hardcode!
-                self.sock.settimeout(15)  
-                # Use select with shutdown event check
-                ready, _, _ = select.select([self.sock], [], [], 1.0)  # Smaller timeout for more responsive shutdown
-                # Check if we're shutting down
-                if self.shutdown_event.is_set():
-                    break            
-#            self.sock.settimeout(0.0)
-                if ready:
-                    data = self.sock.recv(1024)
-                    if not data or b"\r\n\r\n" in data:
-                        buffer.append(data)
-                        break
-                    buffer.append(data)
-                else:
-                # Only send ping if not shutting down
-                    if not self.shutdown_event.is_set():
-#TODO remove hardcode!
-                        if self.sock:
-                            try:
-                                data = f"Action: Ping\r\n\r\n"
-                                self.sock.sendall(data.encode('utf-8'))
-                                self.conn_state += 1 
-                                time.sleep(15)
-                                rprint("conn_state for " + self.name + " is: " + str(self.conn_state))
-                            except Exception as e:
-                                eprint("Error sending ping to " + self.name + ": " + str(e))
-                                break
-                        else:
-                            wprint("a socket for " + self.name + " was already destroyed, so no Ping this time")
-                            break
-            except socket.timeout:
+                buffer.append(data)
+                if b"\r\n\r\n" in data:
+                    break
+        except socket.timeout:
             # Normal timeout, continue loop
-                continue
-            except Exception as e:
-                eprint("Exception in _receive_data for " + self.name + ": " + str(e))
-                break
-        if self.sock and not self.shutdown_event.is_set():
-            self.sock.settimeout(None)
-        return b''.join(buffer).decode('utf-8')
+            pass
+#   wprint("a socket for " + self.name + " was already destroyed, so no Ping this time")
+        except Exception as e:
+            eprint("Exception in _receive_data for " + self.name + ": " + str(e))
+            return None
+        return b''.join(buffer).decode('utf-8') if buffer else None
+
+    def _send_ping(self):
+        """
+        Send a Ping request
+        """
+        if not self.sock or self.shutdown_event.is_set():
+            return False
+
+        try:
+            # Generate unique ActionID
+            self.ping_id = str(int(time.time()))
+            ping_msg = (
+                "Action: Ping\r\n"
+                f"ActionID: {self.ping_id}\r\n"
+                "\r\n"
+            )
+            self.sock.sendall(ping_msg.encode('utf-8'))
+            self.last_ping_time = time.time()
+            return True
+        except Exception as e:
+            eprint("Error sending ping to " + self.name + ": " + str(e))
+            return False
+
+    def _handle_pong(self, response):
+        """Check if response is a valid Pong for our last Ping"""
+        if not response or not self.ping_id:
+            return False
+
+        # !# Validate the Pong response matches our Ping
+        if (f"Pong" in response and
+                f"ActionID: {self.ping_id}" in response):
+            rprint("PoNG REceived for " + self.name)
+            with self.ping_lock:
+                self.conn_state = max(0, self.conn_state - 1)
+                self.ping_id = None
+            return True
+        return False
 
 #TODO discard this method(using it only once)
     def _login_to_server(self):
@@ -319,46 +341,47 @@ class ReadGW(Thread):
                     break  # Do not restart during shutdown
                 rprint("Base thread is not running, starting...")
                 self._start_base_thread()
-            
+            # Check if we need to send a ping
+            now = time.time()
+            send_ping = False
             # Check socket connection state
-            if self.sock and not self.shutdown_event.is_set():
-                try:
-                    # Send a test byte 
-                    self.sock.send(b'\x00')
-                except sock.error:
-                    if self.shutdown_event.is_set():
-                        break  # Don't handle errors during shutdown
-                    eprint("Socket connection test failed. Closing dead socket...")
-                    self._close_socket()
+#            if self.sock:
+#                try:
+#                    # Send a test byte
+#                    self.sock.send(b'\x00')
+#                except sock.error:
+#                    if self.shutdown_event.is_set():
+#                        break  # Don't handle errors during shutdown
+#                    eprint("Socket connection test failed. Closing dead socket...")
+#                    self._close_socket()
                     # The base thread will handle reconnection
-                    break
-#                print("Sending ping for " + self.name)
-#                data = f"Action: Ping\r\n\r\n"
-#                self.sock.sendall(data.encode('utf-8'))
-#                self.conn_state["Ping"] = self.conn_state.get("Ping") + 1
-#                self.conn_state += 1
-    #TODO remove hardcode!
-#                time.sleep(5)
-#                if self.conn_state["Ping"] < RESTART_THRESHOLD:
-                if self.conn_state < RESTART_THRESHOLD:
-#                    print("threshold for " + self.name + " is not exceeded:" + str(self.conn_state["Ping"]))
-                    rprint("threshold for " + self.name + " is not exceeded: " + str(self.conn_state))
-                    time.sleep(self.check_interval)
-                    continue
+#                    break
+            with self.ping_lock:
+                if now - self.last_ping_time >= self.ping_interval:
+                    send_ping = True
+
+                # Check for ping timeout
+                if self.ping_id and (now - self.last_ping_time > self.ping_timeout):
+                    eprint("Ping timeout for " + self.name)
+                    self.conn_state += 1
+                    self.ping_id = None
+
+            if send_ping and not self.ping_id:
+                if not self._send_ping():
+                    rprint("conn_state for " + self.name + " now is: " + str(self.conn_state))
+                    self.conn_state += 1
                 else:
-                    eprint("confirmed lost connection to " + self.name)
-                    rprint("Waiting before reconnect...")
-    #TODO remove hardcode!
-                    time.sleep(180)
-                    self.conn_state = 0
-                    self._close_socket()
-            # sleep till another check either broke from while() or conventionally
-    #TODO remove hardcode!
-#            for _ in range(5):
-            if self.shutdown_event.is_set():
-                break
-            time.sleep(self.check_interval)
-    #TODO remove hardcode!
+                    eprint("Failed to send ping to " + self.name)
+
+            # Check connection state
+            if self.conn_state >= RESTART_THRESHOLD:
+                eprint("Connection problems detected for " + self.name)
+                self._close_socket()
+                time.sleep(10)  # Wait before reconnect
+                continue
+            else:
+                rprint("threshold for " + self.name + " is not exceeded: " + str(self.conn_state))
+            time.sleep(5)
             print("alive watchdog for " + self.name)
 
     def _start_base_thread(self) -> None:
@@ -445,40 +468,43 @@ class ReadGW(Thread):
             if "Response: Success" in self._login_to_server():
                 gprint("Login to " + self.name + " is successful")
         #        send_telegram_message(self.telegram_token, self.telegram_chat_id, "Start listening to " + self.name)
-                while self.running.is_set():
-                    rprint("Listening to " + self.name)
+                rprint("Listening to " + self.name)
+                while self.running.is_set() and not self.shutdown_event.is_set():
                     if self.sock:
                         try:
-                            response = self._receive_data()
+                            response = self._receive_data(timeout=15.0)
+                            if response:
+                                # Handle Pong responses first!!!
+                                if self._handle_pong(response):
+                                    continue
+
+                                if "ReceivedSMS" in response:
+                                    rprint("Received SMS: " + response)
+                                    sms_info = parse_sms_data(response)
+                                    formatted_message = format_sms_for_telegram(sms_info, self.name)
+                                    send_telegram_message(self.telegram_token, self.telegram_chat_id, formatted_message)
+                                    try:
+                                        print(formatted_message)
+                                    #    mailout(self.sendto_email, self.name, formatted_message)
+                                    except:
+                                        eprint("mailout() has failed!")
+                                        send_telegram_message(token, chat_id, "mailout() has failed!")
+                            else:
+                                wprint("unexpected response for " + self.name + " : " + str(response))
                         except Exception as e:
                             eprint("Exception when calling receive_data for " + self.name + " : " + str(e))
-                            pass
-                        if "ReceivedSMS" in response:
-                            rprint("Received SMS: " + response)
-                            sms_info = parse_sms_data(response)
-                            formatted_message = format_sms_for_telegram(sms_info, self.name)
-                            send_telegram_message(self.telegram_token, self.telegram_chat_id, formatted_message)
-                            try:
-                                print(formatted_message)
-                            #    mailout(self.sendto_email, self.name, formatted_message)
-                            except:
-                                eprint("mailout() has failed!")
-                                send_telegram_message(token, chat_id, "mailout() has failed!")
-                        elif "Pong" in response:
-                            rprint("PoNG REceived for " + self.name)
-#TODO make ping-pong counter class property
-                            self.conn_state -= 1
-                            print("conn_state for " + self.name + " is: " + str(self.conn_state))
+                            self._close_socket()
+                            time.sleep(10)
+                            # TODO remove hardcode!
                     else:
                         eprint("Socket is empty")
-#TODO remove hardcode!
-                        time.sleep(100)
             else:
                 eprint("Login failed")
-                self.sock.close()
+                self._close_socket()
         else:
             eprint("No socket for " + self.name)
-        
+            self._close_socket()
+
 sys.tracebacklimit = 0
 
 if __name__ == '__main__':

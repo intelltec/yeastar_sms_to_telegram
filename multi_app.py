@@ -111,20 +111,18 @@ def create_connection(ip, connection_port):
     retry_delay = 15
     connect_timeout = 15
     connection_sock = None
-#TODO connection attempts!
-    while connection_sock == None:
-        try:
-            connection_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            if connection_sock != None:
-                connection_sock.settimeout(connect_timeout)
-                connection_sock.connect((ip, connection_port))
-                connection_sock.settimeout(None)
-                return connection_sock
-            else: 
-                eprint("Cannot create socket... Retrying in " + retry_delay + " seconds")
-                time.sleep(retry_delay)
-        except Exception as e:
-            eprint("create_connection exception: " + str(e))
+    try:
+        connection_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        if connection_sock != None:
+            connection_sock.settimeout(connect_timeout)
+            connection_sock.connect((ip, connection_port))
+            connection_sock.settimeout(None)
+            return connection_sock
+        else:
+            eprint("Cannot create socket... Retrying in " + retry_delay + " seconds")
+            time.sleep(retry_delay)
+    except Exception as e:
+        eprint("create_connection exception: " + str(e))
     return None
 
 def send_data(connection_sock, data):
@@ -220,14 +218,17 @@ class ReadGW(Thread):
         self.telegram_token = telegram_token
         self.telegram_chat_id = telegram_chat_id
         self.sendto_email = sendto_email
-        self.conn_attempt = 1 # how many times base_tread must respawn
+
+        # conn state
+        self.conn_attempt = 2 # how many times base_tread must respawn
+        self.conn_health = False  # health flag
         self.sock = None
+        self.health_sock = None
         self.conn_state = 0
 
-### Added ping tracking variables
-        self.last_ping_time = 0
-        self.ping_interval = 30  # seconds between pings
-        self.ping_timeout = 15  # seconds to wait for pong
+        # Added ping tracking variables
+        self.ping_interval = 60  # seconds between pings
+        self.ping_timeout = 30  # seconds to wait for pong
         self.ping_id = None
         self.ping_lock = threading.Lock()
 
@@ -237,52 +238,76 @@ class ReadGW(Thread):
 #        self.watchdog_thread = None
 
         self.base_thread: Optional[threading.Thread] = None
+        self.health_thread: Optional[threading.Thread] =  None
         self.watchdog_thread: Optional[threading.Thread] = None
         self.running = threading.Event()  # Event to control thread execution
         self.shutdown_event = threading.Event()  # Event to signal shutdown
         self.shutdown_timeout = 5  # seconds to wait for threads to stop
         self.check_interval = 10  # seconds between checks by watchdog
     
+    def _close_sockets(self) -> None:
+        for sock in [self.sock, self.health_sock]:
+            if sock:
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                    sock.close()
+                    rprint("Socket was closed without error(s)")
+                except Exception as e:
+                    # Only log errors if not during shutdown
+                    if not self.shutdown_event.is_set():
+                        eprint("Close socket bad attempt for " + self.name + " with error: " + str(e))
+                finally:
+                # Ensure that socket is cleared up
+                    self.sock = None
+                    self.health_sock = None
+            else:
+                wprint("Empty socket so nothing to close here")
+
+    def _close_health_socket(self) -> None:
+        """Safely close the health socket connection"""
+        if self.health_sock:
+            try:
+                self.health_sock.shutdown(socket.SHUT_RDWR)
+                self.health_sock.close()
+            except Exception:
+                pass  # Ignore errors during shutdown
+            finally:
+                self.health_sock = None
+
     def _close_socket(self) -> None:
+        """Safely close the main socket connection"""
         if self.sock:
             try:
                 self.sock.shutdown(socket.SHUT_RDWR)
                 self.sock.close()
-                rprint("Socket was closed without error(s)")
-            except Exception as e:
-                ### Only log errors if not during shutdown
-                if not self.shutdown_event.is_set():
-                    eprint("Close socket bad attempt for " + self.name + " with error: " + str(e))
+            except Exception:
+                pass  # Ignore errors during shutdown
             finally:
-            # Ensure that socket is cleared up
                 self.sock = None
-        else:
-            wprint("Empty socket so nothing to close here")
 
-    def _receive_data(self, timeout=5.0):
+    def _receive_data(self, sock, timeout=30.0):
         """
         Receive data from the socket until a specific sequence is detected.
         """
-        if not self.sock:
+        if not sock:
+            wprint("a socket for " + self.name + " was already destroyed. _receive_data return None")
             return None
         buffer = []
-        self.sock.settimeout(timeout)
+        sock.settimeout(timeout)
         try:
             while True:
-                data = self.sock.recv(1024)
+                # Use select with proper timeout handling
+                data = sock.recv(1024)
                 if not data:
                     break
                 buffer.append(data)
                 if b"\r\n\r\n" in data:
-                    break
+                    return b''.join(buffer).decode('utf-8')
         except socket.timeout:
-            # Normal timeout, continue loop
-            pass
-#   wprint("a socket for " + self.name + " was already destroyed, so no Ping this time")
+            return None
         except Exception as e:
             eprint("Exception in _receive_data for " + self.name + ": " + str(e))
             return None
-        return b''.join(buffer).decode('utf-8') if buffer else None
 
     def _send_ping(self):
         """
@@ -290,7 +315,6 @@ class ReadGW(Thread):
         """
         if not self.sock or self.shutdown_event.is_set():
             return False
-
         try:
             # Generate unique ActionID
             self.ping_id = str(int(time.time()))
@@ -300,10 +324,12 @@ class ReadGW(Thread):
                 "\r\n"
             )
             self.sock.sendall(ping_msg.encode('utf-8'))
-            self.last_ping_time = time.time()
+            with self.ping_lock:
+                self.last_ping_time = time.time()
+                self.current_ping_id = ping_id
             return True
         except Exception as e:
-            eprint("Error sending ping to " + self.name + ": " + str(e))
+            eprint("Send ping to " + self.name + " failed with: " + str(e))
             return False
 
     def _handle_pong(self, response):
@@ -311,13 +337,16 @@ class ReadGW(Thread):
         if not response or not self.ping_id:
             return False
 
-        # !# Validate the Pong response matches our Ping
+        # ! Validate the Pong response matches our Ping
         if (f"Pong" in response and
                 f"ActionID: {self.ping_id}" in response):
             rprint("PoNG REceived for " + self.name)
             with self.ping_lock:
-                self.conn_state = max(0, self.conn_state - 1)
+                self.last_pong_time = time.time()
                 self.ping_id = None
+                self.conn_state -= 1
+                rprint("conn_state for " + self.name + " was decremented: " + str(self.conn_state))
+#                self.conn_state = max(0, self.conn_state - 1)
             return True
         return False
 
@@ -330,11 +359,113 @@ class ReadGW(Thread):
         send_data(self.sock, login_command)
         return self._receive_data()
 
-    def _watchdog(self) -> None:
+    def _health_mon(self):
+        """Dedicated thread for Ping-Pong health checks"""
+        while self.running.is_set() and not self.shutdown_event.is_set():
+            # Reconnect health socket if needed
+            if not self.health_sock:
+                try:
+                    self.health_sock = socket.create_connection(
+                        (self.ip_address, self.port),
+                        timeout=10
+                    )
+                    # Send login
+                    login_msg = (
+                        "Action: Login\r\n"
+                        f"Username: {self.username}\r\n"
+                        f"Secret: {self.password}\r\n"
+                        "Events: off\r\n"
+                        "\r\n"
+                    )
+                    self.health_sock.sendall(login_msg.encode('utf-8'))
+                    response = self._receive_data(self.health_sock, 10.0)
+                    if not response or "Response: Success" not in response:
+                        raise general_error("Health login failed")
+                except Exception as e:
+                    eprint("Health connection failed for " + self.name + " with: " + str(e))
+                    self._close_health_socket()
+                    time.sleep(10)
+                    continue
+
+            # Send Ping
+            if self.health_sock:
+                try:
+                    self.ping_id = str(int(time.time()))
+                    ping_msg = (
+                        "Action: Ping\r\n"
+                        f"ActionID: {self.ping_id}\r\n"
+                        "\r\n"
+                    )
+                    self.health_sock.sendall(ping_msg.encode('utf-8'))
+                    with self.ping_lock:
+                        self.conn_state += 1  # Increment on Ping send
+                        rprint("conn_state for " + self.name + " was incremented: " + str(self.conn_state))
+                except Exception as e:
+                    eprint("Ping send failed for" + self.name + " with: " + str(e))
+                    self._close_health_socket()
+                    continue
+
+                # Wait for Pong
+                start_time = time.time()
+                while (time.time() - start_time) < self.ping_timeout:
+                    response = self._receive_data(self.health_sock, 1.0)
+                    if response and f"ActionID: {self.ping_id}" in response:
+                        with self.ping_lock:
+                            self.conn_state -= 1  # Decrement on Pong receive
+                            rprint("conn_state for " + self.name + " was decremented: " + str(self.conn_state))
+                        break
+                    if self.shutdown_event.is_set():
+                        break
+                    time.sleep(0.1)
+                else:
+                    eprint("Pong timeout for " + self.name)
+
+            # Sleep until next ping
+            for _ in range(int(self.ping_interval)):
+                if self.shutdown_event.is_set():
+                    break
+                time.sleep(1)
+
+    def _watchdog(self):
+        """Monitor and restart threads as needed"""
+        while self.running.is_set() and not self.shutdown_event.is_set():
+            if self.conn_attempt == 0:
+                print("Connection attempts to " + self.name + "reached their maximum")
+                self.running.clear()
+                self.shutdown_event.set()
+#                self._close_sockets()
+
+                break
+            # Check connection health
+            with self.ping_lock:
+                if self.conn_state > RESTART_THRESHOLD:  # Threshold for unhealthy state
+                    self.conn_health = True
+
+            # Handle unhealthy state
+            if self.conn_health:
+                eprint(f"Unhealthy connection detected for {self.name}, restarting...")
+                self._close_sockets()
+                self.conn_health = False
+                self.conn_state = 0
+
+                # Restart threads
+                if self.base_thread and self.base_thread.is_alive():
+                    self.base_thread.join(timeout=1.0)
+                if self.health_thread and self.health_thread.is_alive():
+                    self.health_thread.join(timeout=1.0)
+
+                self._start_threads()
+
+            time.sleep(5)
+
+    def _old_watchdog(self) -> None:
         """
         Monitor the base thread and socket/connection.
         """
         while self.running.is_set() and not self.shutdown_event.is_set():
+
+            if not self.conn_attempt:
+                break
             # Check if base thread is alive
             if not self.base_thread or not self.base_thread.is_alive():
                 if self.shutdown_event.is_set():
@@ -344,45 +475,65 @@ class ReadGW(Thread):
             # Check if we need to send a ping
             now = time.time()
             send_ping = False
-            # Check socket connection state
-#            if self.sock:
-#                try:
-#                    # Send a test byte
-#                    self.sock.send(b'\x00')
-#                except sock.error:
-#                    if self.shutdown_event.is_set():
-#                        break  # Don't handle errors during shutdown
-#                    eprint("Socket connection test failed. Closing dead socket...")
-#                    self._close_socket()
-                    # The base thread will handle reconnection
-#                    break
             with self.ping_lock:
-                if now - self.last_ping_time >= self.ping_interval:
+                time_since_last_ping = now - self.last_ping_time
+                time_since_last_pong = now - self.last_pong_time
+                if (time_since_last_ping >= self.ping_interval or
+                        (self.current_ping_id and time_since_last_pong >= self.ping_timeout)):
                     send_ping = True
 
                 # Check for ping timeout
                 if self.ping_id and (now - self.last_ping_time > self.ping_timeout):
                     eprint("Ping timeout for " + self.name)
-                    self.conn_state += 1
+#                    self.conn_state += 1
                     self.ping_id = None
 
             if send_ping and not self.ping_id:
-                if not self._send_ping():
-                    rprint("conn_state for " + self.name + " now is: " + str(self.conn_state))
+                if self._send_ping():
                     self.conn_state += 1
+                    rprint("conn_state for " + self.name + " was incremented: " + str(self.conn_state))
                 else:
                     eprint("Failed to send ping to " + self.name)
 
             # Check connection state
             if self.conn_state >= RESTART_THRESHOLD:
                 eprint("Connection problems detected for " + self.name)
-                self._close_socket()
+#                self._close_socket()
                 time.sleep(10)  # Wait before reconnect
                 continue
             else:
                 rprint("threshold for " + self.name + " is not exceeded: " + str(self.conn_state))
             time.sleep(5)
             print("alive watchdog for " + self.name)
+
+    def _start_threads(self):
+        """Start 2 main threads"""
+        if not self.running.is_set():
+            return
+
+        if not self.conn_attempt:
+            wprint("connections attempts for " + self.name + " have reached their maximum")
+            self._close_sockets()
+            self.shutdown_event.set()  # Signal threads to stop
+            self.running.clear()  # Clear the running flag
+            return
+        # Base thread (SMS processing)
+        if not self.base_thread or not self.base_thread.is_alive():
+            self.base_thread = threading.Thread(
+                target=self._base_worker,
+                name=f"{self.name}-Base",
+                daemon=False
+            )
+            self.base_thread.start()
+
+        # Health thread (Ping-Pong)
+        if not self.health_thread or not self.health_thread.is_alive():
+            self.health_thread = threading.Thread(
+                target=self._health_mon,
+                name=f"{self.name}-Health",
+                daemon=False
+            )
+            self.health_thread.start()
 
     def _start_base_thread(self) -> None:
         if self.shutdown_event.wait(timeout=self.shutdown_timeout):
@@ -392,18 +543,38 @@ class ReadGW(Thread):
             return
         if not self.conn_attempt:
             wprint("connections attempts for " + self.name + " have reached their maximum")
-            self._close_socket()
+            self._close_sockets()
             self.shutdown_event.set()  # Signal threads to stop
             self.running.clear()  # Clear the running flag
             return
         self.base_thread = threading.Thread(
-            target=self._run,
-            name="BaseThread",
+            target=self._base_worker,
+            name=f"{self.name}-Base",
             daemon=False  
         )
         self.base_thread.start()
 #        rprint("Base thread for " + self.name + " is started")
-    
+
+    def _start_health_thread(self) -> None:
+        if self.shutdown_event.wait(timeout=self.shutdown_timeout):
+            return  # Don't start new threads during shutdown
+        if self.health_thread and self.health_thread.is_alive():
+            wprint("Health thread is already running")
+            return
+        if not self.conn_attempt:
+            wprint("connections attempts for " + self.name + " have reached their maximum")
+            self._close_sockets()
+            self.shutdown_event.set()  # Signal threads to stop
+            self.running.clear()  # Clear the running flag
+            return
+        self.health_thread = threading.Thread(
+            target=self._health_mon,
+            name=f"{self.name}-Health",
+            daemon=False
+        )
+        self.base_thread.start()
+        #        rprint("Base thread for " + self.name + " is started")
+
     def _start_watchdog_thread(self) -> None:
         if self.shutdown_event.wait(timeout=self.shutdown_timeout):
             return  # Don't start new threads during shutdown
@@ -412,23 +583,53 @@ class ReadGW(Thread):
             return
         self.watchdog_thread = threading.Thread(
             target=self._watchdog,
-            name="WatchdogThread",
+            name=f"{self.name}-Watchdog",
             daemon=False  
         )
         self.watchdog_thread.start()
 #        rprint("Watchdog thread for " + self.name + " is started")
 
-    def start(self) -> None:
+    def start(self):
+        """Start all gateway threads"""
+        if self.running.is_set():
+            return
+        self.running.set()
+        self.shutdown_event.clear()
+        self._start_threads()
+
+        # Start watchdog
+        self.watchdog_thread = threading.Thread(
+            target=self._watchdog,
+            name=f"{self.name}-Watchdog",
+            daemon=False
+        )
+        self.watchdog_thread.start()
+
+    def old_start(self) -> None:
         if self.running.is_set():
             wprint("Thread for " + self.name + " is already running")
             return
         self.running.set()
         self.shutdown_event.clear()
         self._start_base_thread()
+        self._start_health_thread()
         self._start_watchdog_thread()
         rprint("Threads for " + self.name + " have been started")
 
-    def stop(self) -> None:
+    def stop(self):
+        """Graceful shutdown of all threads"""
+        if not self.running.is_set():
+            return
+
+        self.running.clear()
+        self.shutdown_event.set()
+        self._close_sockets()
+
+        for thread in [self.base_thread, self.health_thread, self.watchdog_thread]:
+            if thread and thread.is_alive():
+                thread.join(timeout=self.shutdown_timeout)
+
+    def old_stop(self) -> None:
         if not self.running.is_set():
             wprint("We're not running, but trying to stop")
             return
@@ -438,13 +639,18 @@ class ReadGW(Thread):
 #TODO remove extra exception hadling
         try:
             # Close socket first to interrupt any blocking operations
-            self._close_socket()
+            self._close_sockets()
             # Wait for threads to finish (with shutdown_timeout)
             if self.base_thread and self.base_thread.is_alive():
                 rprint("Waiting for base thread to stop...")
                 self.base_thread.join(timeout=self.shutdown_timeout)
                 if self.base_thread.is_alive():
                     wprint("Base thread did not stop gracefully")
+            if self.health_thread and self.health_thread.is_alive():
+                rprint("Waiting for health thread to stop...")
+                self.health_thread.join(timeout=self.shutdown_timeout)
+                if self.health_thread.is_alive():
+                    wprint("Health thread did not stop gracefully")
             if self.watchdog_thread and self.watchdog_thread.is_alive():
                 rprint("Waiting for watchdog thread to stop...")
                 self.watchdog_thread.join(timeout=self.shutdown_timeout)
@@ -455,9 +661,58 @@ class ReadGW(Thread):
             eprint("Error during shutdown: " + str(e))
         finally:
             # Ensure all resources are cleaned up
-#            self._close_socket()
+#            self._close_sockets()
             self.base_thread = None
             self.watchdog_thread = None
+            self.health_thread = None
+
+    def _base_worker(self):
+        """Main thread for processing SMS messages"""
+        while self.running.is_set() and not self.shutdown_event.is_set():
+            if not self.sock:
+                try:
+                    rprint("Connection attempt to " + self.name + " #" + str(self.conn_attempt))
+                    self.conn_attempt -= 1
+                    self.sock = socket.create_connection(
+                        (self.ip_address, self.port),
+                        timeout=10
+                    )
+                    # Send login
+                    login_msg = (
+                        "Action: Login\r\n"
+                        f"Username: {self.username}\r\n"
+                        f"Secret: {self.password}\r\n"
+                        "Events: off\r\n"
+                        "\r\n"
+                    )
+                    self.sock.sendall(login_msg.encode('utf-8'))
+                    response = self._receive_data(self.sock, 10.0)
+                    if not response or "Response: Success" not in response:
+                        raise general_error("Main login failed")
+                    else:
+                        gprint("Login to " + self.name + " is successful")
+
+                except Exception as e:
+                    eprint("Main connection failed for" + self.name + " with: " + str(e))
+                    self._close_socket()
+                    time.sleep(10)
+                    continue
+            try:
+                response = self._receive_data(self.sock, 60.0)
+                if response and "ReceivedSMS" in response:
+                    rprint("Received SMS: " + response)
+                    sms_info = parse_sms_data(response)
+                    formatted_message = format_sms_for_telegram(sms_info, self.name)
+                    send_telegram_message(self.telegram_token, self.telegram_chat_id, formatted_message)
+                    try:
+                        print(formatted_message)
+                    #    mailout(self.sendto_email, self.name, formatted_message)
+                    except:
+                        eprint("mailout() has failed!")
+                        send_telegram_message(token, chat_id, "mailout() has failed!")
+            except Exception as e:
+                eprint("Error in base worker for: " + self.name + " : " + str(e))
+                self._close_sockets()
 
     def _run(self):
         response = ""
@@ -472,12 +727,8 @@ class ReadGW(Thread):
                 while self.running.is_set() and not self.shutdown_event.is_set():
                     if self.sock:
                         try:
-                            response = self._receive_data(timeout=15.0)
+                            response = self._receive_data(self.sock, 10.0)
                             if response:
-                                # Handle Pong responses first!!!
-                                if self._handle_pong(response):
-                                    continue
-
                                 if "ReceivedSMS" in response:
                                     rprint("Received SMS: " + response)
                                     sms_info = parse_sms_data(response)
@@ -494,7 +745,7 @@ class ReadGW(Thread):
                         except Exception as e:
                             eprint("Exception when calling receive_data for " + self.name + " : " + str(e))
                             self._close_socket()
-                            time.sleep(10)
+#                            time.sleep(10)
                             # TODO remove hardcode!
                     else:
                         eprint("Socket is empty")
@@ -503,7 +754,7 @@ class ReadGW(Thread):
                 self._close_socket()
         else:
             eprint("No socket for " + self.name)
-            self._close_socket()
+#            self._close_socket()
 
 sys.tracebacklimit = 0
 
